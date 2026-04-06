@@ -15,3 +15,4 @@ This project is an AI-powered academic assistant designed to help graduate stude
    ```bash
    git clone https://github.com/yourusername/thesis-creator-ai.git
    cd thesis-creator-ai
+   
