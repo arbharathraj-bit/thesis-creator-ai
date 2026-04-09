@@ -4,137 +4,100 @@ from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 
 # Modern 2026 standardized imports
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 
-# --- FINAL FIX FOR LINE 11 & 12 ---
+# Fix for the ModuleNotFoundError (using the latest langchain-classic structure)
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.chains import create_retrieval_chain
+
+# 1. LOAD API KEY (Checks .env file first)
+load_dotenv()
+GROQ_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
+
 def get_pdf_text_and_metadata(pdf_docs):
-    """Extracts text from PDFs and attaches the filename as metadata for citations."""
     documents = []
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
         text = ""
         for page in pdf_reader.pages:
             text += page.extract_text() or ""
-        
-        # Store as a LangChain document with metadata
         doc = Document(page_content=text, metadata={"source": pdf.name})
         documents.append(doc)
     return documents
 
 def get_text_chunks(documents):
-    """Splits the documents into manageable chunks for the AI."""
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = text_splitter.split_documents(documents)
-    return chunks
+    return text_splitter.split_documents(documents)
 
 def get_vector_store(text_chunks):
-    """Creates a searchable database of the text chunks."""
-    embeddings = OpenAIEmbeddings()
+    # Free, local embeddings (no API key needed for this part)
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(text_chunks, embeddings)
     return vectorstore
 
 def generate_section(vectorstore, theme, subtopic):
-    """Generates a specific section of the thesis based on the subtopic."""
-    # Use gpt-4o or gpt-3.5-turbo depending on your budget
-    llm = ChatOpenAI(temperature=0.3, model_name="gpt-4o") 
+    if not GROQ_KEY:
+        st.error("Missing Groq API Key! Add 'GROQ_API_KEY' to your .env file.")
+        st.stop()
 
-    # Note the 'input' variable name; create_retrieval_chain expects 'input' by default
-    prompt_template = """
-    You are an expert European-level Master's Degree academic writer. 
-    The overall theme of the thesis is: "{theme}".
-    Your task is to write a detailed, highly academic section for the subtopic: "{subtopic}".
-
-    Use ONLY the provided context below to write the section. 
-    You MUST cite your sources using Harvard style in-text citations based on the 'source' metadata provided in the context (e.g., [Smith_2020.pdf]).
-    If the context does not contain enough information to write a comprehensive section, state what is missing, but do not make up facts.
-
-    Context:
-    {context}
-
-    Write the detailed academic section below:
-    """
-
-    prompt = PromptTemplate(
-        template=prompt_template, 
-        input_variables=["context", "theme", "subtopic"]
+    llm = ChatGroq(
+        temperature=0.3, 
+        model_name="llama-3.3-70b-versatile",
+        groq_api_key=GROQ_KEY
     )
 
-    # Retrieval setup
+    prompt_template = """
+    You are an expert academic writer. 
+    Theme: "{theme}"
+    Section: "{subtopic}"
+
+    Use ONLY the context below. Cite using [File_Name.pdf].
+    Context: {context}
+
+    Write the academic section:
+    """
+
+    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "theme", "subtopic"])
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
     combine_docs_chain = create_stuff_documents_chain(llm, prompt)
     retrieval_chain = create_retrieval_chain(retriever, combine_docs_chain)
 
-    # Invoke the chain
-    response = retrieval_chain.invoke({
-        "input": subtopic, 
-        "theme": theme, 
-        "subtopic": subtopic
-    })
+    response = retrieval_chain.invoke({"input": subtopic, "theme": theme, "subtopic": subtopic})
     return response['answer']
 
-# --- STREAMLIT UI ---
+# --- UI ---
+st.set_page_config(page_title="Thesis Draft Assistant", layout="wide")
+st.title("🎓 Thesis Drafting Assistant (Groq Edition)")
 
-st.set_page_config(page_title="European Thesis Creator AI", page_icon="🎓", layout="wide")
-
-st.title("🎓 European Master's Thesis Drafting Assistant")
-st.markdown("Upload your research papers, define your theme and outline, and the AI will draft your thesis section-by-section with citations.")
+if not GROQ_KEY:
+    st.warning("⚠️ API Key not detected. Ensure you have a .env file with GROQ_API_KEY=gsk_...")
 
 with st.sidebar:
-    st.header("1. Upload Literature")
-    pdf_docs = st.file_uploader("Upload your PDF research papers here", accept_multiple_files=True, type=['pdf'])
-    
-    if st.button("Process Papers"):
-        if pdf_docs:
-            with st.spinner("Reading and indexing papers..."):
-                raw_docs = get_pdf_text_and_metadata(pdf_docs)
-                text_chunks = get_text_chunks(raw_docs)
-                vectorstore = get_vector_store(text_chunks)
-                # Store in session state so it persists across button clicks
-                st.session_state.vectorstore = vectorstore
-                st.success("Papers successfully indexed!")
-        else:
-            st.warning("Please upload PDFs first.")
+    st.header("1. Upload Papers")
+    pdf_docs = st.file_uploader("Upload PDFs", accept_multiple_files=True, type=['pdf'])
+    if st.button("Process"):
+        with st.spinner("Indexing..."):
+            raw_docs = get_pdf_text_and_metadata(pdf_docs)
+            chunks = get_text_chunks(raw_docs)
+            st.session_state.vectorstore = get_vector_store(chunks)
+            st.success("Done!")
 
-st.header("2. Define Thesis Scope")
-theme = st.text_input("Main Thesis Theme / Title")
-subtopics_input = st.text_area("Enter your Subtopics/Chapters (One per line)", height=150)
+st.header("2. Draft")
+theme = st.text_input("Thesis Theme")
+subtopics_input = st.text_area("Chapters (One per line)")
 
-if st.button("Generate Thesis Draft"):
+if st.button("Generate"):
     if "vectorstore" not in st.session_state:
-        st.error("Please upload and process your papers first.")
-    elif not theme or not subtopics_input:
-        st.error("Please provide both a theme and subtopics.")
+        st.error("Upload papers first.")
     else:
-        subtopics = subtopics_input.split('\n')
-        subtopics = [s.strip() for s in subtopics if s.strip()]
-
-        st.header("3. Generated Draft")
-        full_draft = f"# {theme}\n\n"
-
-        # Generate the thesis section by section to avoid token limits
+        subtopics = [s.strip() for s in subtopics_input.split('\n') if s.strip()]
         for subtopic in subtopics:
-            with st.spinner(f"Drafting section: {subtopic}..."):
-                section_text = generate_section(st.session_state.vectorstore, theme, subtopic)
-                
-                # Display to UI
+            with st.spinner(f"Writing {subtopic}..."):
+                text = generate_section(st.session_state.vectorstore, theme, subtopic)
                 st.subheader(subtopic)
-                st.write(section_text)
-                
-                # Append to full draft string
-                full_draft += f"## {subtopic}\n{section_text}\n\n"
-        
-        st.success("Drafting Complete!")
-        
-        # Download button
-        st.download_button(
-            label="Download Full Draft (.md)",
-            data=full_draft,
-            file_name="Thesis_Draft.md",
-            mime="text/markdown"
-        )
+                st.write(text)
