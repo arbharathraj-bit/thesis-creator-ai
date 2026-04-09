@@ -1,10 +1,9 @@
 streamlit
-pypdf2
-python-dotenv
 langchain
-langchain-community
-langchain-openai
-langchain-core
-langchain-text-splitters
 langchain-classic
+langchain-groq
+langchain-huggingface
+PyPDF2
+python-dotenv
 faiss-cpu
+sentence-transformers
